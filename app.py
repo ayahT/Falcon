@@ -3,6 +3,7 @@ import pickle
 import base64
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -10,12 +11,16 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from langchain_openai import ChatOpenAI
 import streamlit as st
-from bs4 import BeautifulSoup  # Import BeautifulSoup
+from bs4 import BeautifulSoup
+from pydub import AudioSegment
+from pydub.playback import play
+import simpleaudio as sa  # Import BeautifulSoup
 
 # Initialize the ChatOpenAI instance
 AI71_BASE_URL = "https://api.ai71.ai/v1/"
 AI71_API_KEY = "ai71-api-1505741d-83e9-4ee9-91ea-a331d47a4680"
 llm = ChatOpenAI(model="tiiuae/falcon-180B-chat", api_key=AI71_API_KEY, base_url=AI71_BASE_URL)
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send']
 
 
 def remove_unwanted_text(text):
@@ -129,6 +134,16 @@ def retrieve_emails(service, hours):
         })
     
     return email_data
+def send_email(service, to, subject, body):
+    """Send an email using the Gmail API."""
+    try:
+        message = {
+            'raw': base64.urlsafe_b64encode(f"To: {to}\nSubject: {subject}\n\n{body}".encode()).decode()
+        }
+        sent_message = service.users().messages().send(userId='me', body=message).execute()
+        st.success(f"Email sent successfully! Message ID: {sent_message['id']}")
+    except HttpError as error:
+        st.error(f"An error occurred: {error}")
 
 def create_context(emails):
     """Create context for the language model from the email data."""
@@ -136,20 +151,63 @@ def create_context(emails):
     for email in emails:
         context += f"From: {email['sender']}\nSubject: {email['subject']}\nContent: {email['content']}\n\n"
     return context
+def play_end_sound(file_path):
+    # Load and play MP3 sound
+    sound = AudioSegment.from_mp3(file_path)
+    play(sound)
 
+def countdown(hours, sound_file):
+    total_seconds = hours * 3600
+    st.write("Countdown Timer:")
+    countdown_display = st.empty()  # Create an empty placeholder for the countdown timer
+
+    while total_seconds > 0:
+        # Calculate hours, minutes, and seconds
+        hrs, rem = divmod(total_seconds, 3600)
+        mins, secs = divmod(rem, 60)
+        
+        countdown_display.text(f"{hrs:02}:{mins:02}:{secs:02} remaining")
+        time.sleep(1)  # Wait for 1 second before updating the timer
+        total_seconds -= 1
+
+    countdown_display.text("Time's up!")
+    play_end_sound(sound_file)
 def main():
     st.title("Time Saver")
     
     # Add a slider and button to the sidebar
     with st.sidebar:
+
         hours = st.slider("Retrieve emails from the past (hours)", min_value=0, max_value=24, value=1)
+
+        # Email sending inputs
+        st.subheader("Send an Email")
+        recipient = st.text_input("To")
+        subject = st.text_input("Subject")
+        body = st.text_area("Body")
+        send_button = st.button("Send Email")
+        sound_file = 'sound.wav'  # Path to your MP3 sound file
+
+        if st.button("Start Countdown"):
+           countdown(hours, sound_file)
+
+
+
+        #retrive
         retrieve_button = st.button("Retrieve Emails")
+
 
     if retrieve_button:
         service = authenticate_google_api()
         emails = retrieve_emails(service, hours=hours)
-        st.session_state.emails = emails  # Store emails in session state
+        st.session_state.emails = emails
+        print(emails)
+    
+    if send_button and recipient and subject and body:
+        service = authenticate_google_api()
+        send_email(service, recipient, subject, body)
 
+    
     # Initialize session state for chat messages if not already done
     if 'messages' not in st.session_state:
         st.session_state.messages = []
@@ -183,7 +241,7 @@ def main():
             st.write(remove_unwanted_text(response.content))
 
             # Append the model's response to the session state
-            st.session_state.messages.append({"role": "assistant", "content": response.content})
+            st.session_state.messages.append({"role": "assistant", "content":remove_unwanted_text(response.content)})
 
             # Clear the input field and rerun the app
             st.rerun()  # Use experimental_rerun for better control over rerunning the app
